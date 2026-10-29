@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>little-pip visualizer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root { --amber: #ffb000; --amber-dim: rgba(255,176,0,0.35); --obsidian: #0b0a08; --panel: #14120e; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px; background: radial-gradient(ellipse at top, #1a1608 0%, var(--obsidian) 70%);
+    color: var(--amber); min-height: 100vh;
+    font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; font-size: 15px; line-height: 1.5;
+  }
+  h1 { font-size: 26px; margin: 0 0 4px; text-shadow: 0 0 12px rgba(255,176,0,0.45); letter-spacing: 0.04em; }
+  h2 { font-size: 15px; margin: 28px 0 10px; text-transform: uppercase; letter-spacing: 0.12em;
+       border-bottom: 1px solid var(--amber); padding-bottom: 4px; }
+  .dim { opacity: 0.6; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--amber); padding: 14px; box-shadow: inset 0 0 18px rgba(255,176,0,0.06); }
+  label { display: block; margin-top: 12px; }
+  input[type=range] { width: 100%; accent-color: var(--amber); }
+  input[type=number] { width: 100%; background: var(--obsidian); color: var(--amber);
+    border: 1px solid var(--amber); padding: 4px; font: inherit; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 5px 6px; border-bottom: 1px dashed var(--amber-dim); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .big { font-size: 34px; font-weight: 700; text-shadow: 0 0 14px rgba(255,176,0,0.5); }
+  .bar { height: 10px; background: #2a2212; border: 1px solid var(--amber); margin-top: 6px; }
+  .bar > div { height: 100%; background: var(--amber); width: 0; transition: width 0.2s; }
+  .warn { color: #ff6b00; min-height: 1.4em; }
+  pre { background: var(--panel); border: 1px solid var(--amber); padding: 12px; overflow-x: auto; }
+  a { color: var(--amber); }
+  .stack { display: flex; flex-direction: column; gap: 6px; align-items: center; }
+  .block { width: 100%; max-width: 420px; border: 1px solid var(--amber); padding: 8px 10px; text-align: center; background: var(--panel); }
+  .block.acc { background: rgba(255,176,0,0.14); }
+  .arrow { opacity: 0.6; }
+</style>
+</head>
+<body>
+
+<h1>little-pip</h1>
+<p class="dim">A ~4.8M parameter character-level transformer. Same architecture as tinyPIP-0, scaled up. Zero build step. Open this file in any browser.</p>
+
+<h2>Parameter calculator</h2>
+<div class="grid">
+  <div class="card">
+    <label>Embedding dim (n_embd): <span id="v-embd"></span>
+      <input type="range" id="embd" min="128" max="384" step="32" value="256"></label>
+    <label>Layers (n_layer): <span id="v-layer"></span>
+      <input type="range" id="layer" min="1" max="12" step="1" value="6"></label>
+    <label>Heads (n_head): <span id="v-head"></span>
+      <input type="range" id="head" min="1" max="12" step="1" value="8"></label>
+    <label>Context (block_size): <span id="v-block"></span>
+      <input type="range" id="block" min="64" max="512" step="64" value="256"></label>
+    <label>Vocabulary size: <input type="number" id="vocab" value="65" min="2"></label>
+  </div>
+  <div class="card">
+    <div class="dim">total parameters</div>
+    <div class="big" id="total"></div>
+    <div class="bar"><div id="budget"></div></div>
+    <div class="dim" id="budget-label" style="margin-top:4px"></div>
+    <div id="warn" class="warn"></div>
+    <div class="dim" style="margin-top:8px">MLP width is 4 x n_embd. Biases are off in linear layers. Output head is tied to the token embedding.</div>
+  </div>
+</div>
+
+<h2>Parameter breakdown</h2>
+<table>
+  <tr><td>token embedding (vocab x dim)</td><td class="num" id="p-tok"></td></tr>
+  <tr><td>position embedding (block x dim)</td><td class="num" id="p-pos"></td></tr>
+  <tr><td>attention qkv + proj (per layer)</td><td class="num" id="p-attn"></td></tr>
+  <tr><td>MLP fc + proj (per layer)</td><td class="num" id="p-mlp"></td></tr>
+  <tr><td>layer norms (per layer)</td><td class="num" id="p-ln"></td></tr>
+  <tr><td>all layers total</td><td class="num" id="p-layers"></td></tr>
+  <tr><td>final layer norm</td><td class="num" id="p-lnf"></td></tr>
+  <tr><td><b>total</b></td><td class="num" id="p-total"></td></tr>
+</table>
+
+<h2>Architecture</h2>
+<div class="stack">
+  <div class="block">tokens (vocab 65)</div><div class="arrow">|</div>
+  <div class="block acc">token embedding + position embedding</div><div class="arrow">|</div>
+  <div class="block" id="layers-box">[ LayerNorm, causal self-attention, residual, LayerNorm, GELU MLP 4x, residual ] x n_layer</div><div class="arrow">|</div>
+  <div class="block">final LayerNorm</div><div class="arrow">|</div>
+  <div class="block acc">linear head (tied to token embedding)</div><div class="arrow">|</div>
+  <div class="block">next-character logits</div>
+</div>
+
+<h2>Run it</h2>
+<pre>
+pip install -r requirements.txt
+python train.py                  # writes out/littlepip.pt
+python train.py --eval-only      # report loss and perplexity
+python generate.py --prompt "ROMEO:" --tokens 300
+</pre>
+
+<script>
+(function () {
+  var BUDGET = 5000000;
+  var ids = ["embd", "layer", "head", "block"];
+  var vals = { embd: "v-embd", layer: "v-layer", head: "v-head", block: "v-block" };
+  function fmt(n) { return n.toLocaleString("en-US"); }
+  function calc() {
+    var C = +document.getElementById("embd").value;
+    var L = +document.getElementById("layer").value;
+    var H = +document.getElementById("head").value;
+    var B = +document.getElementById("block").value;
+    var V = +document.getElementById("vocab").value;
+    ids.forEach(function (id) {
+      document.getElementById(vals[id]).textContent = document.getElementById(id).value;
+    });
+    var tok = V * C;
+    var pos = B * C;
+    var attn = 4 * C * C;          // qkv (3C^2) + proj (C^2), no bias
+    var mlp = 8 * C * C;           // fc (4C^2) + proj (4C^2), no bias
+    var ln = 4 * C;                // two LayerNorms per block, weight + bias each
+    var perLayer = attn + mlp + ln;
+    var lnf = 2 * C;
+    var total = tok + pos + L * perLayer + lnf;
+    document.getElementById("total").textContent = fmt(total);
+    document.getElementById("p-tok").textContent = fmt(tok);
+    document.getElementById("p-pos").textContent = fmt(pos);
+    document.getElementById("p-attn").textContent = fmt(attn);
+    document.getElementById("p-mlp").textContent = fmt(mlp);
+    document.getElementById("p-ln").textContent = fmt(ln);
+    document.getElementById("p-layers").textContent = fmt(L * perLayer);
+    document.getElementById("p-lnf").textContent = fmt(lnf);
+    document.getElementById("p-total").textContent = fmt(total);
+    var pct = Math.min(100, (total / BUDGET) * 100);
+    document.getElementById("budget").style.width = pct + "%";
+    document.getElementById("budget-label").textContent = pct.toFixed(1) + "% of the 5M target";
+    document.getElementById("layers-box").textContent =
+      "[ LayerNorm, causal self-attention, residual, LayerNorm, GELU MLP 4x, residual ] x " + L;
+    var w = document.getElementById("warn");
+    w.textContent = (C % H !== 0) ? "n_embd must be divisible by n_head" : "";
+  }
+  ids.forEach(function (id) { document.getElementById(id).addEventListener("input", calc); });
+  document.getElementById("vocab").addEventListener("input", calc);
+  calc();
+})();
+</script>
+</body>
+</html>
